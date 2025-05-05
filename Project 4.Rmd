@@ -1,0 +1,165 @@
+---
+title: "Project 4"
+author: "Jane Song"
+date: "2025-04-28"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load packages
+
+```{r}
+library(stringr)
+library(dplyr)
+library(rvest)
+library(tm)
+library(caret)
+library(randomForest)
+library(e1071)
+
+```
+
+## Download ham and spam files 
+```{r}
+# ham 
+ham_url <- "https://spamassassin.apache.org/old/publiccorpus/20021010_hard_ham.tar.bz2"
+ham_file <- tempfile(fileext = ".tar.bz2")
+download.file(ham_url, destfile = ham_file, mode = "wb")
+
+# spam
+spam_url <- "https://spamassassin.apache.org/old/publiccorpus/20021010_spam.tar.bz2"
+spam_file <- tempfile(fileext = ".tar.bz2")
+download.file(spam_url, destfile = ham_file, mode = "wb")
+```
+
+## Extract files
+```{r} 
+# Define destination names
+ham_file <- "hard_ham.tar.bz2"
+spam_file <- "spam.tar.bz2"
+
+# Download files
+download.file(ham_url, ham_file, mode = "wb")
+download.file(spam_url, spam_file, mode = "wb")
+
+# Create directories 
+ham_dir <- "hard_ham_extracted"
+spam_dir <- "spam_extracted"
+dir.create(ham_dir, showWarnings = FALSE)
+dir.create(spam_dir, showWarnings = FALSE)
+
+# Extract contents to directories
+archive::archive_extract(ham_file, dir = ham_dir)
+archive::archive_extract(spam_file, dir = spam_dir)
+
+
+```
+
+
+## Load extracted files into dataframes
+```{r}
+# Prep to load emails into df
+load_emails <- function(path, label) 
+  {files <- list.files(path, full.names = TRUE, recursive = TRUE)
+  files <- files[file.info(files)$isdir == FALSE]
+  
+  emails <- lapply(files, function(f) 
+    {tryCatch({
+      paste(readLines(f, warn = FALSE, encoding = "UTF-8"), collapse = "\n")}, 
+      error = function(e) NA)})
+  
+  emails <- emails[!is.na(emails)]
+  
+  data.frame(
+    text = unlist(emails),
+    label = label,
+    stringsAsFactors = FALSE)}
+
+# Load emails 
+ham_df <- load_emails(ham_dir, "ham")
+spam_df <- load_emails(spam_dir, "spam")
+
+# Combine into single df
+email_data <- rbind(ham_df, spam_df)
+
+
+table(email_data$label)
+    
+```
+
+## Clean corpus 
+```{r}
+corpus <- VCorpus(VectorSource(email_data$text))
+
+# Clean corpus
+safe_tolower <- content_transformer(function(x) {
+  tryCatch(tolower(x), error = function(e) "")})
+
+corpus_clean <- tm_map(corpus, safe_tolower) # convert to lowercase
+corpus_clean <- tm_map(corpus_clean, removePunctuation) # remove punctuation 
+corpus_clean <- tm_map(corpus_clean, removeNumbers) # remove numbers 
+corpus_clean <- tm_map(corpus_clean, removeWords, stopwords("en")) # remove stopwords (the, and, you, etc)
+corpus_clean <- tm_map(corpus_clean, stripWhitespace) # clean extra spaces
+
+# Create document-term matrix & df 
+dtm <- DocumentTermMatrix(corpus_clean)
+
+# Remove sparse terms
+dtm <- removeSparseTerms(dtm, 0.99)
+
+dtm_df <- as.data.frame(as.matrix(dtm))
+dtm_df$label <- email_data$label
+
+```
+
+## Split data into training and test set
+
+```{r}
+set.seed(123123)
+
+# Split off 80% of the emails to test 
+train_idx <- createDataPartition(dtm_df$label, p = 0.8, list = FALSE)
+train_data <- dtm_df[train_idx, ]
+test_data  <- dtm_df[-train_idx, ]
+
+train_data$label <- factor(train_data$label)
+
+
+```
+
+## Training Naive Bayes Model
+
+```{r}
+# Remove broken emails 
+corpus_clean <- corpus_clean[sapply(corpus_clean, function(doc) {
+  txt <- tryCatch(as.character(doc), error = function(e) "")
+  nchar(txt) > 0
+})]
+
+# Document matrix 
+dtm <- DocumentTermMatrix(corpus_clean)
+
+model <- naiveBayes(label ~ ., data = train_data)
+
+# Check ratios of ham vs spam
+table(train_data$label)
+```
+
+# Test rest of emails
+```{r}
+test_data$label <- factor(test_data$label, levels = c("ham", "spam"))
+
+# Predictions based on test data
+pred <- predict(model, newdata = test_data)
+
+# Convert predictions to factor 
+pred <- factor(pred, levels = c("ham", "spam"))
+
+confusionMatrix(pred, test_data$label)
+
+```
+
+
